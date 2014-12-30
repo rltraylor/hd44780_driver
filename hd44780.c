@@ -1,24 +1,22 @@
 //hd44780.c
 //A set of useful functions for writing LCD characer displays
 //that utilize the Hitachi HD44780 or equivalent LCD controller.
-//This code includes adaptation for 4 bit LCD interface.
+//This code also includes adaptation for 4 bit LCD interface.
+//Right now support only exists or 2x16 displays.
 
 
 //Original source by R. Traylor ~2006
 //Refactored by R. Traylor 10.7.09
 //New features added by Kirby Headrick 11.20.09
 //lcd_send with delay added by William Dillon 10.8.10
-//Cleaned up again by R. Traylor 12.28.2011
+//Refactored, and cleaned up again by R. Traylor 12.28.2011, 12.30.2014
 
 #include <avr/io.h>
 #include <util/delay.h>
 #include <string.h>
 #include <stdlib.h>
-
 #include "hd44780.h"
 
-#define CMD_BYTE   0
-#define CHAR_BYTE  1
 #define NUM_LCD_CHARS 16
 
 //If using an interrupt driven, one char at a time style lcd refresh
@@ -32,19 +30,16 @@ char  lcd_str[16];  //holds string to send to lcd
 //
 // Sends a command or character data to the lcd. First argument of 0x00 indicates 
 // a command transfer while 0x01 indicates data transfer.  The next byte is the 
-// command or character byte. Last argument is the delay in uS to be executed 
-// after the byte is sent.  A zero delays are O.K., as delays can be added after 
-// the return.
+// command or character byte. 
 //
 // This is a low-level function usually called by the other functions but may
-// be called directly to provide more control, especially over the wait delay.
+// be called directly to provide more control. Most commonly controlled
+// commands require 37us to complete. Thus, this routine should be called no more
+// often than every 37us.
 //
-void send_lcd(uint8_t cmd_or_char, uint8_t byte, uint16_t wait){
-uint8_t temp;
-
-//TODO: uint32_t temp_long;
-//TODO: temp_long = F_CPU;
-
+// Commnads that require more time have delays built in for them.
+//
+void send_lcd(uint8_t cmd_or_char, uint8_t byte){
 
 #if SPI_MODE==1
   SPDR = (cmd_or_char)? 0x01 : 0x00;  //send the proper value for intent
@@ -52,17 +47,14 @@ uint8_t temp;
   SPDR = byte;                        //send payload
   while (bit_is_clear(SPSR,SPIF)){}   //wait till byte is sent out
   strobe_lcd();                       //strobe the LCD enable pin
-  _delay_us(1000);                    //typ 1ms for CMDs, 100uS for CHARs  TODO: KLUDGE ALERT
 #else //4-bit mode
   if(cmd_or_char==0x01){LCD_PORT |=  (1<<LCD_CMD_DATA_BIT);}
   else                 {LCD_PORT &= ~(1<<LCD_CMD_DATA_BIT);} 
-  temp = LCD_PORT & 0x0F;             //perserve lower nibble, clear top nibble
+  uint8_t temp = LCD_PORT & 0x0F;             //perserve lower nibble, clear top nibble
   LCD_PORT   = temp | (byte & 0xF0);  //output upper nibble first
   strobe_lcd();                       //send to LCD
   LCD_PORT   = temp | (byte << 4);    //output lower nibble second
   strobe_lcd();                       //send to LCD
-  if(cmd_or_char==0x01) {_delay_us(100);}  //typ 1ms for CMDs, 100uS for CHARs
-  else                  {_delay_us(1000);}
 #endif
 }
 
@@ -72,10 +64,10 @@ uint8_t temp;
 //When called, writes one character to the LCD.  On each call it     
 //increments a pointer so that after 32 calls, the entire lcd is    
 //written. The calling program is responsible for not calling this 
-//function more often than every 1ms which is the maximum amount of 
-//time it might take for any operation to take in this function.
-//(homeline or homeline2). Its presently being called every 8ms as 
-//determined by the setup for for TCNT1.
+//function more often than every 80us which is the maximum amount 
+//of time it might take for any operation to take in this function.
+//This includes the possibility for a movement to the next line. 
+//These functions are homeline() or homeline2. 
 //
 //The array is organized as one array of 32 char locations to make 
 //the index handling easier.  To external functions that write into 
@@ -89,22 +81,16 @@ uint8_t temp;
 //  | 16| 17| 18| 19| 20| 21| 22| 23| 24| 25| 26| 27| 28| 29| 30| 31|  
 //  -----------------------------------------------------------------
 //
-//
-//TODO: why is the delay 40us before hte homeline2 and cursor home?
-//TODO: integrate the unified lcd code here.
-
 void refresh_lcd(char lcd_string_array[]) {
 
-    static uint8_t index=0;           // index into string array 
+  static uint8_t i=0;           // index into string array 
 
-    SPDR = 0x01; //set SR for data
-    while (!(SPSR & 0x80)) {}       //wait for SPI transfer to complete
-    SPDR = lcd_string_array[index];
-    while (!(SPSR & 0x80)) {}       //wait for SPI transfer to complete
-    strobe_lcd();                   //write into LCD
-    index++;                        //increment to next character
-    if(index == 16) {_delay_us(40); home_line2();}           //on to 2nd line, 1st position 
-    if(index == 32) {_delay_us(40); cursor_home(); index=0;} //back to 1st line, 1st position
+ send_lcd(CHAR_BYTE,lcd_string_array[i]);
+ i++;   //increment to next character
+ //delays are inserted to allow character to be written before moving
+ //the cursor to the next line.
+ if(i == 16){_delay_us(40); line2_col1();      } //goto line 2, 1st char 
+ if(i == 32){_delay_us(40); line1_col1(); i=0; } //goto line 1, 1st char 
 }//refresh_lcd
 /***********************************************************************/
 
@@ -135,8 +121,10 @@ void refresh_lcd(char lcd_string_array[]) {
 
 void set_custom_character(uint8_t data[], uint8_t address){
     uint8_t i;
-    send_lcd(CMD_BYTE, 0x40 + (address << 3), 1000);  //only needs 40uS!
-    for(i=0; i<8; i++){send_lcd(CHAR_BYTE, data[i], 100);}
+    send_lcd(CMD_BYTE, 0x40 + (address << 3)); _delay_us(40);  //only needs 37uS
+    for(i=0; i<8; i++){
+      send_lcd(CHAR_BYTE, data[i]); _delay_us(40); //each char byte takes 37us to execute
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -145,22 +133,24 @@ void set_custom_character(uint8_t data[], uint8_t address){
 //Sets the cursor to an arbitrary potition on the screen, row is either 1 or 2
 //col is a number form 0-15, counting from left to right
 void set_cursor(uint8_t row, uint8_t col){
-    send_lcd(CMD_BYTE, 0x80 + col + ((row-1)*0x40), 1000);
+    send_lcd(CMD_BYTE, 0x80 + col + ((row-1)*0x40));
 }
+//TODO: use this method of moving the cursor in the other cursor moving routines
+
 //-----------------------------------------------------------------------------
 //                          uint2lcd 
 //
 //Takes a 8bit unsigned and displays it in base ten on the LCD. Leading 0's are 
 //not displayed.  
 //TODO: optimize by removing the mod operators
-//TODO: does not display the number zero!  (FIXED 8.30.2014)
-//
+//TODO: Should be renamed uint8_2lcd(). Also, implement a uint16_2lcd() function
+
 void uint2lcd(uint8_t number){
-    if  (number == 0)  {send_lcd(CHAR_BYTE, 0x30                , 100); }
+    if  (number == 0)  {send_lcd(CHAR_BYTE, 0x30                ); }
     else{
-      if(number >= 100){send_lcd(CHAR_BYTE, 0x30+number/100     , 100); }
-      if(number >= 10) {send_lcd(CHAR_BYTE, 0x30+(number%100)/10, 100); }
-      if(number >= 1)  {send_lcd(CHAR_BYTE, 0x30+(number%10)    , 100); }
+      if(number >= 100){send_lcd(CHAR_BYTE, 0x30+number/100     ); }
+      if(number >= 10) {send_lcd(CHAR_BYTE, 0x30+(number%100)/10); }
+      if(number >= 1)  {send_lcd(CHAR_BYTE, 0x30+(number%10)    ); }
     }
 }
 
@@ -171,36 +161,41 @@ void uint2lcd(uint8_t number){
 //not displayed.
 //
 void int2lcd(int8_t number){
-    if(number < 0){send_lcd(CHAR_BYTE, '-', 100); uint2lcd(~number+1);}    //take 2's complement of number and display
-    else                                    {uint2lcd(number);}
+    //if < 0, print minus sign, then take 2's complement of number and display
+    if(number < 0){send_lcd(CHAR_BYTE, '-'); _delay_us(40); uint2lcd(~number+1);}  
+    else          {uint2lcd(number);                                            }
 }
 
 //-----------------------------------------------------------------------------
 //                          cursor_on
 //
 //Sets the cursor to display
-void cursor_on(void){send_lcd(CMD_BYTE, 0x0E, 1000);}
+void cursor_on(void){send_lcd(CMD_BYTE, 0x0E);}
 
 //-----------------------------------------------------------------------------
 //                          cursor_off
 //
 //Turns the cursor display off
-void cursor_off(void){send_lcd(CMD_BYTE, 0x0C, 1000);}
+void cursor_off(void){send_lcd(CMD_BYTE, 0x0C);}
 
 //-----------------------------------------------------------------------------
 //                          shift_right 
 //
 //shifts the display right one character
-void shift_right(void){send_lcd(CMD_BYTE, 0x1E, 1000);}
+void shift_right(void){send_lcd(CMD_BYTE, 0x1E);}
 
 //-----------------------------------------------------------------------------
 //                          shift_left  
 //
 //shifts the display left one character
-void shift_left(void){send_lcd(CMD_BYTE, 0x18, 1000);}
+void shift_left(void){send_lcd(CMD_BYTE, 0x18);}
 
 //-----------------------------------------------------------------------------
 //                          strobe_lcd  
+//Strobes the "E" pin on the LCD module. How this is done depends on the interface
+//style. The 4-bit mode is presently kludged with nop statements to make a suitable
+//pulse width for a 4 Mhz clock.
+//TODO: make number of nops executed dependent on F_CPU, not hardcoded
 //
 void strobe_lcd(void){ 
 #if SPI_MODE==1
@@ -217,20 +212,49 @@ void strobe_lcd(void){
 //-----------------------------------------------------------------------------
 //                          clear_display  
 //
-void clear_display(void){send_lcd(CMD_BYTE, 0x01,2000);} //2ms wait for LCD
+//Clears entire display and sets DDRAM address 0 in address counter. Requires
+//1.8ms for execution. Use only if you can withstand the big delay.
+//
+void clear_display(void){
+  send_lcd(CMD_BYTE, CLEAR_DISPLAY);
+  _delay_us(1800);   //1.8ms wait for LCD execution
+} 
 
 //-----------------------------------------------------------------------------
-//                          cursor_home    
+//                          cursor_home()    
 //
-//Set cursor to row 0, column 0.
-void cursor_home(void){send_lcd(CMD_BYTE, 0x02,1500);} //1.5ms wait for LCD
+//Sets DDRAM address 0 in address counter. Also returns display from being 
+//shifted to original position.  DDRAM contents remain unchanged. Requires
+//1.5ms to execute. Use only if you can withstand the big delay. Consider
+//using line1_col1().
+//
+void cursor_home(void){
+  send_lcd(CMD_BYTE, RETURN_HOME);
+  _delay_us(1500);  //1.5ms wait for LCD execution
+  } 
   
 //-----------------------------------------------------------------------------
-//                          home_line2    
+//                          line2_col1()    
 //
-//Put cursor at row 1, column 0
-void home_line2(void){send_lcd(CMD_BYTE, 0xC0,1500);} //1.5ms wait for LCD
+//Put cursor at line 2, column 0 by directly maniuplating the DDRAM address
+//pointer. 37us required for execution.
+//
+void line2_col1(void){                           
+  //change DDRAM address to 40, first char in second row, executes in 37us
+  send_lcd(CMD_BYTE, (SET_DDRAM_ADDR | 0x40));
+} 
  
+//-----------------------------------------------------------------------------
+//                          line1_col1() 
+//
+//Put cursor at line 1, column 0 by directly maniuplating the DDRAM address
+//pointer. 37us required for execution.
+//
+void line1_col1(void){
+  //change DDRAM address to 0, first char in first row, executes in 37us
+  send_lcd(CMD_BYTE,(SET_DDRAM_ADDR | 0x00));
+} 
+
 //-----------------------------------------------------------------------------
 //                          fill_spaces   
 //
@@ -238,7 +262,8 @@ void home_line2(void){send_lcd(CMD_BYTE, 0xC0,1500);} //1.5ms wait for LCD
 void fill_spaces(void){
 	uint8_t i;
 	for (i=0; i<=(NUM_LCD_CHARS-1); i++){
-		send_lcd(CHAR_BYTE, ' ',100); //100us wait between characters
+		send_lcd(CHAR_BYTE, ' '); 
+                _delay_us(40);  //40us wait between characters
 	}
 }  
    
@@ -247,8 +272,8 @@ void fill_spaces(void){
 //                            
 //Send a single char to the LCD.
 //usage: char2lcd('H');  // send an H to the LCD
-void char2lcd(char a_char){send_lcd(CHAR_BYTE, a_char, 100);} //100us wait after char
-  
+//
+void char2lcd(char a_char){send_lcd(CHAR_BYTE, a_char);} 
 
 //----------------------------------------------------------------------------
 //                            string2lcd
@@ -256,7 +281,9 @@ void char2lcd(char a_char){send_lcd(CHAR_BYTE, a_char, 100);} //100us wait after
 //Send a ascii string to the LCD.
 void string2lcd(char *lcd_str){ 
   uint8_t i;
-  for (i=0; i<=(strlen(lcd_str)-1); i++){send_lcd(CHAR_BYTE, lcd_str[i], 100);}                  
+  for (i=0; i<=(strlen(lcd_str)-1); i++){send_lcd(CHAR_BYTE, lcd_str[i]);
+  _delay_us(40);  //execution takes 37us per character
+  }                  
 } 
 
 //----------------------------------------------------------------------------
@@ -267,16 +294,16 @@ void string2lcd(char *lcd_str){
 void lcd_init(void){
   _delay_ms(16);      //power up delay
 #if SPI_MODE==1       //assumption is that the SPI port is intialized
-  //TODO: kludge alert! should not be here.
+  //TODO: kludge alert! setting of DDRF should not be here, but is probably harmless.
   DDRF=0x08;          //port F bit 3 is enable for LCD in SPI mode
-  send_lcd(CMD_BYTE, 0x30, 7000); //send cmd sequence 3 times 
-  send_lcd(CMD_BYTE, 0x30, 7000);
-  send_lcd(CMD_BYTE, 0x30, 7000);
-  send_lcd(CMD_BYTE, 0x38, 5000);
-  send_lcd(CMD_BYTE, 0x08, 5000);
-  send_lcd(CMD_BYTE, 0x01, 5000);
-  send_lcd(CMD_BYTE, 0x06, 5000);
-  send_lcd(CMD_BYTE, 0x0C + (CURSOR_VISIBLE<<1) + CURSOR_BLINK, 5);
+  send_lcd(CMD_BYTE, 0x30); _delay_ms(7); //send cmd sequence 3 times 
+  send_lcd(CMD_BYTE, 0x30); _delay_ms(7);
+  send_lcd(CMD_BYTE, 0x30); _delay_ms(7);
+  send_lcd(CMD_BYTE, 0x38); _delay_ms(5);
+  send_lcd(CMD_BYTE, 0x08); _delay_ms(5);
+  send_lcd(CMD_BYTE, 0x01); _delay_ms(5);
+  send_lcd(CMD_BYTE, 0x06); _delay_ms(5);
+  send_lcd(CMD_BYTE, 0x0C + (CURSOR_VISIBLE<<1) + CURSOR_BLINK); _delay_ms(5);
 #else //4-bit mode
   LCD_PORT_DDR = 0xF0                    | //initalize data pins
                  ((1<<LCD_CMD_DATA_BIT)  | //initalize control pins
@@ -289,11 +316,11 @@ void lcd_init(void){
   LCD_PORT = 0x30; strobe_lcd(); _delay_us(80); //function set,   write lcd, delay > 37us
   LCD_PORT = 0x20; strobe_lcd(); _delay_us(80); //set 4-bit mode, write lcd, delay > 37us
   //continue initalizing the LCD, but in 4-bit mode
-  send_lcd(CMD_BYTE, 0x28, 7000); //function set: 4-bit, 2 lines, 5x8 font
+  send_lcd(CMD_BYTE, 0x28); _delay_ms(7); //function set: 4-bit, 2 lines, 5x8 font
   //send_lcd(CMD_BYTE, 0x08, 5000);
-  send_lcd(CMD_BYTE, 0x01, 5000);  //clear display
-  send_lcd(CMD_BYTE, 0x06, 5000);  //cursor moves to right, don't shift display
-  send_lcd(CMD_BYTE, 0x0C | (CURSOR_VISIBLE<<1) | CURSOR_BLINK, 5);
+  send_lcd(CMD_BYTE, 0x01); _delay_ms(7)  //clear display
+  send_lcd(CMD_BYTE, 0x06);  _delay_ms(5) //cursor moves to right, don't shift display
+  send_lcd(CMD_BYTE, 0x0C | (CURSOR_VISIBLE<<1) | CURSOR_BLINK); _delay_ms(5);
 #endif
 }
 
@@ -310,6 +337,7 @@ void lcd_init(void){
 // of the number will be filled with zeros.
 // This code courtesy of David Naviaux.
 //************************************************************************
+// TODO: not yet tested
 void  lcd_int32(int32_t l,          //number to display
                 uint8_t fieldwidth, //width of the field for display
                 uint8_t decpos,     //0 if no decimal point, otherwise
@@ -353,7 +381,7 @@ void  lcd_int32(int32_t l,          //number to display
       if (bSigned){sline[i++] = '-';}
 
       // now output the formatted number
-      do{send_lcd(CHAR_BYTE, sline[--i] , 1000);} while(i);
+      do{send_lcd(CHAR_BYTE, sline[--i]); _delay_us(40);} while(i);
 
 }
 
@@ -366,6 +394,7 @@ void  lcd_int32(int32_t l,          //number to display
 // displayed with decpos decimal positions displayed.  If bZeroFill and fieldwidth 
 // are specified, the number will be displayed right justified in the field and all 
 // positions in the field to the left of the number will be filled with zeros.
+// TODO: not yet tested
 //
 // IN:           l               - number to display
 //               fieldwidth      - width of the field
@@ -426,6 +455,6 @@ void    lcd_int16(int16_t l,
         if (bSigned){sline[i++] = '-';}
 
         // now output the formatted number 
-            do{send_lcd(CHAR_BYTE, sline[--i] , 1000);} while(i);
+            do{send_lcd(CHAR_BYTE, sline[--i]); _delay_us(40);} while(i);
 }
 
