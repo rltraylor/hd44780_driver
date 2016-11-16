@@ -85,12 +85,19 @@ void refresh_lcd(char lcd_string_array[]) {
 
   static uint8_t i=0;           // index into string array 
 
- send_lcd(CHAR_BYTE,lcd_string_array[i]);
- i++;   //increment to next character
- //delays are inserted to allow character to be written before moving
- //the cursor to the next line.
- if(i == 16){_delay_us(40); line2_col1();      } //goto line 2, 1st char 
- if(i == 32){_delay_us(40); line1_col1(); i=0; } //goto line 1, 1st char 
+  if(lcd_string_array[i] == '\0')
+  {
+      _delay_us(40);
+      line1_col1();
+      i=0;
+      return;
+  }
+
+  send_lcd(CHAR_BYTE,lcd_string_array[i]);
+  i++;   //increment to next character
+  //delays are inserted to allow character to be written before moving
+  //the cursor to the next line.
+  if(i == 16){_delay_us(40); line2_col1();      } //goto line 2, 1st char
 }//refresh_lcd
 /***********************************************************************/
 
@@ -287,7 +294,7 @@ void string2lcd(char *lcd_str){
 } 
 
 //----------------------------------------------------------------------------
-//                            lcd_int 
+//                            lcd_init
 //
 //Initalize the LCD 
 //
