@@ -98,6 +98,7 @@ void refresh_lcd(char lcd_string_array[]) {
   //delays are inserted to allow character to be written before moving
   //the cursor to the next line.
   if(i == 16){_delay_us(40); line2_col1();      } //goto line 2, 1st char
+  else if(i == 32){_delay_us(40); line1_col1(); i=0; } //goto line 1, 1st char
 }//refresh_lcd
 /***********************************************************************/
 
