@@ -89,7 +89,7 @@ void refresh_lcd(char lcd_string_array[]) {
   if(lcd_string_array[i] == '\0') null_flag = 1;
 
   // if a null terminator is found clear the rest of the display
-  if(null_flag) send_lcd(CHAR_BYTE, " ");
+  if(null_flag) send_lcd(CHAR_BYTE, ' ');
   else send_lcd(CHAR_BYTE,lcd_string_array[i]);
 
   i++;   //increment to next character
